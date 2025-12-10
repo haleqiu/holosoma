@@ -75,6 +75,22 @@ After training, deploy your policies:
 
 Or browse all deployment options in the [Inference & Deployment Guide](src/holosoma_inference/README.md).
 
+### State Recording
+
+Record proprioceptive (joint positions/velocities/torques) and IMU data during MuJoCo simulation:
+
+```bash
+source scripts/source_mujoco_setup.sh
+python src/holosoma/holosoma/run_sim.py \
+    robot:g1-29dof \
+    --state-recording.enabled True \
+    --state-recording.output-prefix my_robot_data
+```
+
+This creates:
+- `my_robot_data_lowstate.pkl` - Joint states and IMU data
+- `my_robot_data_poses.pkl` - Ground truth pelvis poses
+
 ### Demo Videos
 
 Watch real-world deployments of Holosoma policies *(click thumbnails to play)*
