@@ -27,6 +27,7 @@ from holosoma.utils.helpers import get_class
 from holosoma.utils.rate import RateLimiter
 from holosoma.utils.safe_torch_import import torch
 from holosoma.utils.simulator_config import SimulatorType, get_simulator_type, set_simulator_type
+from holosoma.utils.state_recorder import StateRecorder, StateRecorderConfig
 from holosoma.utils.torch_utils import to_torch
 
 
@@ -351,6 +352,17 @@ class DirectSimulation:
         self.simulation_app = simulation_app
         self.simulator = env.sim
 
+        # Initialize state recorder if enabled
+        self.state_recorder: StateRecorder | None = None
+        if config.state_recording.enabled:
+            recorder_config = StateRecorderConfig(
+                env_id=0,
+                record_torques=config.state_recording.record_torques,
+            )
+            self.state_recorder = StateRecorder(self.simulator, recorder_config)
+            prefix = config.state_recording.output_prefix
+            logger.info(f"State recording enabled: {prefix}_lowstate.pkl, {prefix}_poses.pkl")
+
     def __enter__(self) -> Self:
         """Context manager entry - initialize the simulation.
 
@@ -437,14 +449,18 @@ class DirectSimulation:
         Manages the complete simulation loop including rate limiting,
         viewer synchronization, FPS logging, and error handling.
         """
-        # Setup rate limiting
+        # Setup rate limiting (only if realtime mode)
         sim_frequency = self.config.simulator.config.sim.fps
-        rate_limiter = RateLimiter(sim_frequency)
+        rate_limiter = RateLimiter(sim_frequency) if self.config.realtime else None
 
         # Calculate viewer sync frequency
         viewer_steps = self._calculate_viewer_steps()
 
         logger.info(f"Simulation rate: {sim_frequency} Hz ({1.0 / sim_frequency * 1000:.2f} ms)")
+        if self.config.realtime:
+            logger.info("Running in REAL-TIME mode (rate-limited)")
+        else:
+            logger.info("Running in FAST mode (no rate limiting, as fast as possible)")
         logger.info(f"Viewer rate: {1 / self.config.viewer_dt:.1f} Hz (sync every {viewer_steps} steps)")
         logger.info("Starting direct simulation loop...")
         logger.info("Press Ctrl+C to stop simulation")
@@ -472,6 +488,10 @@ class DirectSimulation:
                 # Direct simulator step - this triggers bridge.step() inside simulate_at_each_physics_step()
                 self.simulator.simulate_at_each_physics_step()
 
+                # Record state if enabled (after physics step to capture latest state)
+                if self.state_recorder is not None:
+                    self.state_recorder.record()
+
                 # Update viewer at display rate
                 if step_count % viewer_steps == 0:
                     self.simulator.render()
@@ -481,7 +501,10 @@ class DirectSimulation:
                     fps_start_time = self._log_fps(step_count, fps_start_time)
 
                 step_count += 1
-                rate_limiter.sleep()
+
+                # Rate limit only in realtime mode
+                if rate_limiter is not None:
+                    rate_limiter.sleep()
 
             except KeyboardInterrupt:  # noqa: PERF203
                 logger.info("Simulation interrupted by user (Ctrl+C)")
@@ -499,6 +522,12 @@ class DirectSimulation:
 
     def cleanup(self) -> None:
         """Handle simulation cleanup."""
+        # Save recorded states if enabled
+        if self.state_recorder is not None and self.state_recorder.step_count > 0:
+            prefix = self.config.state_recording.output_prefix
+            self.state_recorder.save(f"{prefix}_lowstate.pkl")
+            self.state_recorder.save_poses(f"{prefix}_poses.pkl")
+
         # Cleanup environment
         if hasattr(self.env, "close"):
             self.env.close()

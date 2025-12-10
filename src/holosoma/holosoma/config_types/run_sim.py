@@ -24,6 +24,28 @@ from holosoma.config_types.terrain import TerrainManagerCfg
 from holosoma.config_types.video import VideoConfig
 
 
+@dataclass(frozen=True)
+class StateRecordingConfig:
+    """Configuration for state recording during simulation.
+
+    When enabled, records proprioceptive (joint pos/vel/torques) and IMU data
+    (orientation, angular velocity, linear acceleration) at each physics step.
+
+    Files are saved as:
+    - {output_prefix}_lowstate.pkl - Full lowstate data (joint pos/vel/torques, IMU)
+    - {output_prefix}_poses.pkl - Ground truth pelvis poses
+    """
+
+    enabled: bool = False
+    """Whether to enable state recording."""
+
+    output_prefix: str = "recorded"
+    """Output file prefix. Creates {prefix}_lowstate.pkl and {prefix}_poses.pkl"""
+
+    record_torques: bool = True
+    """Whether to record applied torques."""
+
+
 def default_training_config() -> TrainingConfig:
     """Create minimal training config for direct simulation."""
     return TrainingConfig(num_envs=1, headless=False, seed=42, torch_deterministic=False)
@@ -81,3 +103,9 @@ class RunSimConfig:
     device: str | None = "cpu"
     """Device to use for simulation. None auto-detects based on the simulator type.
     """
+
+    state_recording: StateRecordingConfig = field(default_factory=StateRecordingConfig)
+    """Configuration for recording proprioceptive and IMU state data."""
+
+    realtime: bool = True
+    """Run simulation in real-time (rate-limited). Set to False to run as fast as possible."""
