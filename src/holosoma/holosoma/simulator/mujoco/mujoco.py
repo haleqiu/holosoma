@@ -744,6 +744,14 @@ class MuJoCo(BaseSimulator):
             self.num_envs, self.num_bodies, 3, device=self.sim_device, dtype=torch.float32
         )
 
+        # Initialize torso body ID for torso IMU properties (optional, may not exist)
+        try:
+            self._torso_body_id: int | None = self.find_rigid_body_indice("torso_link")
+            logger.info(f"Torso body ID initialized: {self._torso_body_id}")
+        except RuntimeError:
+            self._torso_body_id = None
+            logger.warning("Torso body 'torso_link' not found - torso IMU properties will be unavailable")
+
     def prepare_randomization_fields(self, field_names: list[str]) -> None:
         """Prepare model fields for per-environment randomization.
 
@@ -1407,6 +1415,97 @@ class MuJoCo(BaseSimulator):
 
         assert self.root_data is not None
         return torch.from_numpy(self.root_data.actuator_force[: self.num_dof]).float().to(self.sim_device)
+
+    @property
+    def torso_quat(self) -> torch.Tensor:
+        """Torso orientation quaternion [num_envs, 4] in xyzw format.
+
+        Returns the torso body orientation from MuJoCo, converted from MuJoCo's
+        [w,x,y,z] format to holosoma's [x,y,z,w] format.
+
+        Returns
+        -------
+        torch.Tensor
+            Torso orientation quaternion with shape [num_envs, 4].
+
+        Raises
+        ------
+        RuntimeError
+            If torso body is not available.
+        """
+        if self._torso_body_id is None:
+            raise RuntimeError("Torso body 'torso_link' not found in model")
+
+        assert self.root_data is not None
+        mj_quat = self.root_data.xquat[self._torso_body_id]  # [w, x, y, z]
+        # Convert to holosoma format [x, y, z, w]
+        holosoma_quat = torch.tensor(
+            [[mj_quat[1], mj_quat[2], mj_quat[3], mj_quat[0]]],
+            device=self.sim_device,
+            dtype=torch.float32,
+        )
+        return holosoma_quat
+
+    @property
+    def torso_angular_vel(self) -> torch.Tensor:
+        """Torso angular velocity [num_envs, 3].
+
+        Returns the torso body angular velocity from MuJoCo using mj_objectVelocity.
+
+        Returns
+        -------
+        torch.Tensor
+            Torso angular velocity with shape [num_envs, 3].
+
+        Raises
+        ------
+        RuntimeError
+            If torso body is not available.
+        """
+        if self._torso_body_id is None:
+            raise RuntimeError("Torso body 'torso_link' not found in model")
+
+        assert self.root_model is not None
+        assert self.root_data is not None
+
+        # Use mj_objectVelocity to get body velocity [angular(3), linear(3)]
+        body_vel = np.zeros(6)
+        mujoco.mj_objectVelocity(
+            self.root_model,
+            self.root_data,
+            mujoco.mjtObj.mjOBJ_BODY,
+            self._torso_body_id,
+            body_vel,
+            0,  # flg_local=0 means world frame
+        )
+        # Extract angular velocity (first 3 components)
+        angular_vel = torch.from_numpy(body_vel[:3]).float().to(self.sim_device)
+        return angular_vel.unsqueeze(0)  # [1, 3] for single env
+
+    @property
+    def torso_linear_acc(self) -> torch.Tensor:
+        """Torso linear acceleration [num_envs, 3] from MuJoCo's cacc.
+
+        Returns the torso body linear acceleration from MuJoCo's cacc array.
+        MuJoCo's cacc format is [angular(3), linear(3)] per body.
+
+        Returns
+        -------
+        torch.Tensor
+            Torso linear acceleration with shape [num_envs, 3].
+
+        Raises
+        ------
+        RuntimeError
+            If torso body is not available.
+        """
+        if self._torso_body_id is None:
+            raise RuntimeError("Torso body 'torso_link' not found in model")
+
+        assert self.root_data is not None
+        # cacc format: [angular(3), linear(3)] per body
+        linear_acc = torch.from_numpy(self.root_data.cacc[self._torso_body_id, 3:6].copy()).float().to(self.sim_device)
+        return linear_acc.unsqueeze(0)  # [1, 3] for single env
 
     def _update_text_overlay(self) -> None:
         """Update text overlay based on current state (event-driven).

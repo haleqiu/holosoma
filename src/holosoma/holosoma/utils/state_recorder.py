@@ -74,6 +74,11 @@ class RecordedData:
     root_pos: np.ndarray  # [num_steps, 3]
     root_lin_vel: np.ndarray  # [num_steps, 3]
 
+    # Torso IMU data (MuJoCo only, optional)
+    torso_quat: np.ndarray | None = None  # [num_steps, 4] xyzw format
+    torso_angular_vel: np.ndarray | None = None  # [num_steps, 3]
+    torso_linear_acc: np.ndarray | None = None  # [num_steps, 3]
+
     # Metadata
     dof_names: list[str] = field(default_factory=list)
     sim_dt: float = 0.0
@@ -120,6 +125,11 @@ class StateRecorder:
         self._base_linear_acc: list[np.ndarray] = []
         self._root_pos: list[np.ndarray] = []
         self._root_lin_vel: list[np.ndarray] = []
+
+        # Torso IMU data (MuJoCo only)
+        self._torso_quat: list[np.ndarray] = []
+        self._torso_angular_vel: list[np.ndarray] = []
+        self._torso_linear_acc: list[np.ndarray] = []
 
     def _get_numpy_view(self, tensor, env_id: int = 0) -> np.ndarray:
         """Get numpy copy of tensor data.
@@ -170,6 +180,14 @@ class StateRecorder:
         self._root_lin_vel.append(root_state[7:10].copy())
         self._base_angular_vel.append(root_state[10:13].copy())  # Angular velocity from root state
 
+        # Record torso IMU if available (MuJoCo only)
+        # Check _torso_body_id first - it's set to None if torso body doesn't exist
+        torso_body_id = getattr(self.simulator, "_torso_body_id", None)
+        if torso_body_id is not None:
+            self._torso_quat.append(self._get_numpy_view(self.simulator.torso_quat, env_id))
+            self._torso_angular_vel.append(self._get_numpy_view(self.simulator.torso_angular_vel, env_id))
+            self._torso_linear_acc.append(self._get_numpy_view(self.simulator.torso_linear_acc, env_id))
+
     def get_data(self) -> RecordedData:
         """Get recorded data as a RecordedData object.
 
@@ -190,6 +208,9 @@ class StateRecorder:
             base_linear_acc=np.array(self._base_linear_acc, dtype=np.float32) if self._base_linear_acc else np.array([]),
             root_pos=np.array(self._root_pos, dtype=np.float32) if self._root_pos else np.array([]),
             root_lin_vel=np.array(self._root_lin_vel, dtype=np.float32) if self._root_lin_vel else np.array([]),
+            torso_quat=np.array(self._torso_quat, dtype=np.float32) if self._torso_quat else None,
+            torso_angular_vel=np.array(self._torso_angular_vel, dtype=np.float32) if self._torso_angular_vel else None,
+            torso_linear_acc=np.array(self._torso_linear_acc, dtype=np.float32) if self._torso_linear_acc else None,
             dof_names=list(self.simulator.dof_names) if hasattr(self.simulator, "dof_names") else [],
             sim_dt=self.simulator.sim_dt,
             num_steps=n,
@@ -249,6 +270,14 @@ class StateRecorder:
                 "root_lin_vel": data.root_lin_vel,
             },
         }
+
+        # Add torso IMU data at top level if available (simulation-specific)
+        if data.torso_quat is not None:
+            pickle_data["torso_imu"] = {
+                "quaternion": data.torso_quat.astype(np.float32),
+                "gyroscope": data.torso_angular_vel.astype(np.float32) if data.torso_angular_vel is not None else None,
+                "accelerometer": data.torso_linear_acc.astype(np.float32) if data.torso_linear_acc is not None else None,
+            }
 
         with open(filepath, "wb") as f:
             pickle.dump(pickle_data, f)
@@ -350,6 +379,9 @@ class StateRecorder:
         imu = lowstate.get("imu", {})
         metadata = data.get("metadata", {})
 
+        # Load torso IMU data if available (top-level, simulation-specific)
+        torso_imu = data.get("torso_imu", {})
+
         return RecordedData(
             timestamps=lowstate.get("timestamp", np.array([])),
             dof_pos=motor_state.get("q", np.array([])),
@@ -360,6 +392,9 @@ class StateRecorder:
             base_linear_acc=imu.get("accelerometer", np.array([])),
             root_pos=metadata.get("root_pos", np.array([])),
             root_lin_vel=metadata.get("root_lin_vel", np.array([])),
+            torso_quat=torso_imu.get("quaternion") if torso_imu else None,
+            torso_angular_vel=torso_imu.get("gyroscope") if torso_imu else None,
+            torso_linear_acc=torso_imu.get("accelerometer") if torso_imu else None,
             dof_names=metadata.get("dof_names", []),
             sim_dt=metadata.get("sim_dt", 0.0),
             num_steps=metadata.get("num_steps", len(lowstate.get("timestamp", []))),
@@ -376,9 +411,16 @@ class StateRecorder:
         self._base_linear_acc.clear()
         self._root_pos.clear()
         self._root_lin_vel.clear()
+        self._torso_quat.clear()
+        self._torso_angular_vel.clear()
+        self._torso_linear_acc.clear()
         logger.debug("StateRecorder reset")
 
     @property
     def step_count(self) -> int:
         """Number of steps recorded so far."""
         return len(self._timestamps)
+
+
+
+
