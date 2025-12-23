@@ -65,8 +65,8 @@ class RecordedData:
     dof_vel: np.ndarray  # [num_steps, num_dof]
     torques: np.ndarray | None  # [num_steps, num_dof] or None
 
-    # IMU data
-    base_quat: np.ndarray  # [num_steps, 4] (xyzw format)
+    # IMU data (internal format: xyzw, matching holosoma convention)
+    base_quat: np.ndarray  # [num_steps, 4] (xyzw format, converted to wxyz when saved)
     base_angular_vel: np.ndarray  # [num_steps, 3]
     base_linear_acc: np.ndarray  # [num_steps, 3]
 
@@ -74,8 +74,8 @@ class RecordedData:
     root_pos: np.ndarray  # [num_steps, 3]
     root_lin_vel: np.ndarray  # [num_steps, 3]
 
-    # Torso IMU data (MuJoCo only, optional)
-    torso_quat: np.ndarray | None = None  # [num_steps, 4] xyzw format
+    # Torso IMU data (MuJoCo only, optional, internal format: xyzw)
+    torso_quat: np.ndarray | None = None  # [num_steps, 4] xyzw format (converted to wxyz when saved)
     torso_angular_vel: np.ndarray | None = None  # [num_steps, 3]
     torso_linear_acc: np.ndarray | None = None  # [num_steps, 3]
 
@@ -85,11 +85,52 @@ class RecordedData:
     num_steps: int = 0
 
 
+def _xyzw_to_wxyz(quat_xyzw: np.ndarray) -> np.ndarray:
+    """Convert quaternion from xyzw to wxyz format (ROS-compatible).
+
+    Parameters
+    ----------
+    quat_xyzw : np.ndarray
+        Quaternion in [x, y, z, w] format. Shape: [..., 4]
+
+    Returns
+    -------
+    np.ndarray
+        Quaternion in [w, x, y, z] format. Shape: [..., 4]
+    """
+    if quat_xyzw.shape[-1] != 4:
+        raise ValueError(f"Expected quaternion with last dimension 4, got shape {quat_xyzw.shape}")
+    # Convert [x, y, z, w] -> [w, x, y, z]
+    return quat_xyzw[..., [3, 0, 1, 2]]
+
+
+def _wxyz_to_xyzw(quat_wxyz: np.ndarray) -> np.ndarray:
+    """Convert quaternion from wxyz to xyzw format (holosoma internal format).
+
+    Parameters
+    ----------
+    quat_wxyz : np.ndarray
+        Quaternion in [w, x, y, z] format. Shape: [..., 4]
+
+    Returns
+    -------
+    np.ndarray
+        Quaternion in [x, y, z, w] format. Shape: [..., 4]
+    """
+    if quat_wxyz.shape[-1] != 4:
+        raise ValueError(f"Expected quaternion with last dimension 4, got shape {quat_wxyz.shape}")
+    # Convert [w, x, y, z] -> [x, y, z, w]
+    return quat_wxyz[..., [1, 2, 3, 0]]
+
+
 class StateRecorder:
     """Records proprioceptive and IMU data from MuJoCo simulation.
 
     This class records data dynamically without a fixed buffer size.
     Saves to pickle format compatible with locomotion_dataset.pkl structure.
+    
+    Note: Quaternions are stored in wxyz format (ROS-compatible) even though
+    holosoma internally uses xyzw format. This conversion happens during save().
 
     Parameters
     ----------
@@ -220,6 +261,9 @@ class StateRecorder:
         """Save recorded data to pickle file.
 
         Output format is compatible with locomotion_dataset.pkl structure.
+        
+        Note: Quaternions are automatically converted from xyzw (holosoma internal format)
+        to wxyz (ROS-compatible format) when saving to file.
 
         Parameters
         ----------
@@ -255,7 +299,7 @@ class StateRecorder:
                     "temperature": np.zeros((data.num_steps, num_dof, 2), dtype=np.float64),
                 },
                 "imu": {
-                    "quaternion": data.base_quat.astype(np.float32),
+                    "quaternion": _xyzw_to_wxyz(data.base_quat).astype(np.float32),  # Convert to wxyz (ROS format)
                     "gyroscope": data.base_angular_vel.astype(np.float32),
                     "accelerometer": data.base_linear_acc.astype(np.float32),
                 },
@@ -274,7 +318,7 @@ class StateRecorder:
         # Add torso IMU data at top level if available (simulation-specific)
         if data.torso_quat is not None:
             pickle_data["torso_imu"] = {
-                "quaternion": data.torso_quat.astype(np.float32),
+                "quaternion": _xyzw_to_wxyz(data.torso_quat).astype(np.float32),  # Convert to wxyz (ROS format)
                 "gyroscope": data.torso_angular_vel.astype(np.float32) if data.torso_angular_vel is not None else None,
                 "accelerometer": data.torso_linear_acc.astype(np.float32) if data.torso_linear_acc is not None else None,
             }
@@ -296,6 +340,9 @@ class StateRecorder:
 
         This is a lightweight file containing only the ground truth pose data,
         useful for trajectory analysis or visualization.
+        
+        Note: Quaternions are automatically converted from xyzw (holosoma internal format)
+        to wxyz (ROS-compatible format) when saving to file.
 
         Parameters
         ----------
@@ -318,7 +365,7 @@ class StateRecorder:
             "sequence_name": self.config.sequence_name,
             "timestamp": data.timestamps.astype(np.float64),
             "position": data.root_pos.astype(np.float64),  # [N, 3] world frame
-            "quaternion": data.base_quat.astype(np.float64),  # [N, 4] xyzw
+            "quaternion": _xyzw_to_wxyz(data.base_quat).astype(np.float64),  # [N, 4] wxyz (ROS format)
             "linear_velocity": data.root_lin_vel.astype(np.float64),  # [N, 3]
         }
 
@@ -359,6 +406,9 @@ class StateRecorder:
     def load(filepath: str | Path) -> RecordedData:
         """Load recorded data from pickle file.
 
+        Quaternions stored in wxyz format (ROS-compatible) are automatically
+        converted back to xyzw format (holosoma internal format) when loading.
+
         Parameters
         ----------
         filepath : str or Path
@@ -367,7 +417,7 @@ class StateRecorder:
         Returns
         -------
         RecordedData
-            Loaded data container.
+            Loaded data container. Quaternions are in xyzw format (holosoma internal).
         """
         filepath = Path(filepath)
 
@@ -382,17 +432,24 @@ class StateRecorder:
         # Load torso IMU data if available (top-level, simulation-specific)
         torso_imu = data.get("torso_imu", {})
 
+        # Convert quaternions from wxyz (stored format) to xyzw (internal format)
+        base_quat_stored = imu.get("quaternion", np.array([]))
+        base_quat = _wxyz_to_xyzw(base_quat_stored) if len(base_quat_stored) > 0 else base_quat_stored
+        
+        torso_quat_stored = torso_imu.get("quaternion") if torso_imu else None
+        torso_quat = _wxyz_to_xyzw(torso_quat_stored) if torso_quat_stored is not None and len(torso_quat_stored) > 0 else torso_quat_stored
+
         return RecordedData(
             timestamps=lowstate.get("timestamp", np.array([])),
             dof_pos=motor_state.get("q", np.array([])),
             dof_vel=motor_state.get("dq", np.array([])),
             torques=motor_state.get("tau_est"),
-            base_quat=imu.get("quaternion", np.array([])),
+            base_quat=base_quat,
             base_angular_vel=imu.get("gyroscope", np.array([])),
             base_linear_acc=imu.get("accelerometer", np.array([])),
             root_pos=metadata.get("root_pos", np.array([])),
             root_lin_vel=metadata.get("root_lin_vel", np.array([])),
-            torso_quat=torso_imu.get("quaternion") if torso_imu else None,
+            torso_quat=torso_quat,
             torso_angular_vel=torso_imu.get("gyroscope") if torso_imu else None,
             torso_linear_acc=torso_imu.get("accelerometer") if torso_imu else None,
             dof_names=metadata.get("dof_names", []),
