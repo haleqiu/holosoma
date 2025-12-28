@@ -44,7 +44,7 @@ dependencies = [
     "types-python-dateutil",
     "types-requests",
     "types-tqdm",
-    "tyro>=0.10.0a4",
+    "tyro>=1.0.0",
     "wandb==0.22.0", # pin version until https://github.com/wandb/wandb/issues/10647 is fixed
     "warp-lang==1.10.0",
     "yourdfpy>=0.0.58",
@@ -61,4 +61,5 @@ where = ["."]
 [tool.pytest.ini_options]
 markers = [
     "isaacsim: marks tests as requiring Isaac Sim (deselect with '-m \"not isaacsim\"')",
+    "multi_gpu: marks tests as requiring multiple GPUs (deselect with '-m \"not multi_gpu\"')",
 ]
