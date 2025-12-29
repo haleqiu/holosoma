@@ -12,7 +12,7 @@ def print_statistics(data, prefix=""):
         for key, value in data.items():
             new_prefix = f"{prefix}.{key}" if prefix else key
             print_statistics(value, new_prefix)
-    elif isinstance(data, (list, tuple)):
+    elif isinstance(data, (list, tuple)):s
         for i, item in enumerate(data):
             new_prefix = f"{prefix}[{i}]" if prefix else f"[{i}]"
             print_statistics(item, new_prefix)
