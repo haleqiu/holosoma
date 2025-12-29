@@ -213,10 +213,7 @@ class StateRecorder:
         For CPU tensors, copies data. For GPU tensors, copies to CPU first.
         """
         t = tensor[env_id] if tensor.dim() > 1 else tensor
-        if t.device.type == "cpu":
-            return t.detach().numpy().copy()
-        else:
-            return t.detach().cpu().numpy().copy()
+        return t.detach().cpu().numpy().copy()
 
     def _get_motor_cmd_data(self, env_id: int = 0) -> np.ndarray | None:
         """Extract motor command data from bridge system.
@@ -235,38 +232,32 @@ class StateRecorder:
             - tau: feedforward torque (Nm)
             - kp: position gain
             - kd: velocity gain
-            Returns None if bridge/motor commands are not available.
+        Returns None if bridge/motor commands are not available.
         """
-        # Check if bridge system is available
-        if not hasattr(self.simulator, "bridge") or self.simulator.bridge is None:
+        bridge = getattr(self.simulator, "bridge", None)
+        if bridge is None:
             return None
 
-        bridge = self.simulator.bridge
-        if not hasattr(bridge, "robot_bridge") or bridge.robot_bridge is None:
+        robot_bridge = getattr(bridge, "robot_bridge", None)
+        if robot_bridge is None:
             return None
 
-        robot_bridge = bridge.robot_bridge
-        if not hasattr(robot_bridge, "low_cmd") or robot_bridge.low_cmd is None:
+        low_cmd = getattr(robot_bridge, "low_cmd", None)
+        if low_cmd is None:
             return None
 
-        if not hasattr(robot_bridge.low_cmd, "motor_cmd"):
+        # Try unified structure first (Unitree bridge: q_target, dq_target, tau_ff, kp, kd as lists)
+        q_target = np.asarray(low_cmd.q_target, dtype=np.float32)
+        if q_target.size == 0:
             return None
 
-        motor_cmd_list = robot_bridge.low_cmd.motor_cmd
-        if not motor_cmd_list:
-            return None
+        dq_target = np.asarray(low_cmd.dq_target, dtype=np.float32)
+        tau_ff = np.asarray(low_cmd.tau_ff, dtype=np.float32)
+        kp = np.asarray(low_cmd.kp, dtype=np.float32)
+        kd = np.asarray(low_cmd.kd, dtype=np.float32)
 
-        num_motors = len(motor_cmd_list)
-        # Extract motor commands: [q, dq, tau, kp, kd] for each motor
-        motor_cmd_array = np.zeros((num_motors, 5), dtype=np.float32)
-        for i, motor_cmd in enumerate(motor_cmd_list):
-            motor_cmd_array[i, 0] = getattr(motor_cmd, "q", 0.0)
-            motor_cmd_array[i, 1] = getattr(motor_cmd, "dq", 0.0)
-            motor_cmd_array[i, 2] = getattr(motor_cmd, "tau", 0.0)
-            motor_cmd_array[i, 3] = getattr(motor_cmd, "kp", 0.0)
-            motor_cmd_array[i, 4] = getattr(motor_cmd, "kd", 0.0)
-
-        return motor_cmd_array
+        # Build array: [q, dq, tau, kp, kd] for each motor
+        return np.stack((q_target, dq_target, tau_ff, kp, kd), axis=-1)
 
     def record(self, torques: np.ndarray | None = None) -> None:
         """Record current state from simulator.
@@ -290,10 +281,12 @@ class StateRecorder:
         if self.config.record_torques:
             if torques is not None:
                 self._torques.append(torques.copy())
-            elif hasattr(self.simulator, "root_data") and self.simulator.root_data is not None:
-                self._torques.append(self.simulator.root_data.ctrl.copy())
             else:
-                self._torques.append(np.zeros(self.simulator.num_dof))
+                root_data = getattr(self.simulator, "root_data", None)
+                if root_data is not None:
+                    self._torques.append(root_data.ctrl.copy())
+                else:
+                    self._torques.append(np.zeros(self.simulator.num_dof))
 
         # Record IMU data
         self._base_quat.append(self._get_numpy_view(self.simulator.base_quat, env_id))
@@ -315,8 +308,9 @@ class StateRecorder:
             self._torso_linear_acc.append(self._get_numpy_view(self.simulator.torso_linear_acc, env_id))
 
         # Record commands if available (locomotion/policy commands)
-        if hasattr(self.simulator, "commands") and self.simulator.commands is not None:
-            self._commands.append(self._get_numpy_view(self.simulator.commands, env_id))
+        commands = getattr(self.simulator, "commands", None)
+        if commands is not None:
+            self._commands.append(self._get_numpy_view(commands, env_id))
 
         # Record motor commands if available (from bridge system)
         motor_cmd_data = self._get_motor_cmd_data(env_id)
@@ -348,7 +342,7 @@ class StateRecorder:
             torso_linear_acc=np.array(self._torso_linear_acc, dtype=np.float32) if self._torso_linear_acc else None,
             commands=np.array(self._commands, dtype=np.float32) if self._commands else None,
             motor_cmd=np.array(self._motor_cmd, dtype=np.float32) if self._motor_cmd else None,
-            dof_names=list(self.simulator.dof_names) if hasattr(self.simulator, "dof_names") else [],
+            dof_names=list(getattr(self.simulator, "dof_names", [])),
             sim_dt=self.simulator.sim_dt,
             num_steps=n,
         )
